@@ -30,14 +30,14 @@ TIMEOUT_SALUD_S = max(2, int(float(os.getenv("TIMEOUT_SALUD_S", 2))))
 # ---------------------------------------------------------------------------
 # UT4 - Gatekeeper (patron de seguridad).
 #
-# Clave interna que admision exige en el header X-Clave-Interna para aceptar
-# solicitudes de admision. Asegura que nadie saltee al Gatekeeper (ingreso).
+# Clave interna que admision exige en cada evento paquete.validado. Asegura que
+# nadie saltee la validacion.
 # ---------------------------------------------------------------------------
 CLAVE_INTERNA = os.getenv("CLAVE_INTERNA", "cinta-interna-dev")
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://tfu:tfu@rabbitmq:5672/%2F")
-COLA_NOMBRE = os.getenv("COLA_NOMBRE", "admision_paquetes")
-COLA_INVALIDACIONES = os.getenv("COLA_INVALIDACIONES", "cinta_cache_invalidada")
+EXCHANGE_EVENTOS = os.getenv("EXCHANGE_EVENTOS", "cinta.eventos")
+COLA_VALIDADOS = os.getenv("COLA_VALIDADOS", "admision.validados")
 COLA_PAUSA_PROCESAMIENTO_S = float(os.getenv("COLA_PAUSA_PROCESAMIENTO_S", 0))
 
 # Consumo en paralelo de la cola: cada consumidor tiene su propia conexion

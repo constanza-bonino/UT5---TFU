@@ -1,4 +1,4 @@
-"""Publicacion durable y difusion de invalidaciones de Cache-Aside."""
+"""Publicacion de eventos y escucha de invalidaciones de Cache-Aside."""
 
 import json
 import logging
@@ -8,8 +8,7 @@ import time
 import pika
 from pika.exceptions import AMQPError
 
-from app.config import (CLAVE_INTERNA, COLA_INVALIDACIONES, COLA_NOMBRE,
-                        RABBITMQ_URL)
+from app.config import CLAVE_INTERNA, EXCHANGE_EVENTOS, RABBITMQ_URL
 
 LOG = logging.getLogger("cola_ingreso")
 
@@ -56,33 +55,28 @@ def _canal_de_hilo():
     conexion = pika.BlockingConnection(_parametros())
     canal = conexion.channel()
     canal.confirm_delivery()
-    canal.queue_declare(queue=COLA_NOMBRE, durable=True, arguments={
-        "x-dead-letter-exchange": "",
-        "x-dead-letter-routing-key": f"{COLA_NOMBRE}.fallidos",
-    })
+    canal.exchange_declare(exchange=EXCHANGE_EVENTOS, exchange_type="topic", durable=True)
     _estado_hilo.conexion = conexion
     _estado_hilo.canal = canal
     return canal
 
 
-def publicar(solicitud: dict):
-    """Publica un mensaje durable reutilizando el canal del hilo.
+def publicar(routing_key: str, evento: dict):
+    """Publica un evento durable reutilizando el canal del hilo.
 
     Ante un error de AMQP se descarta el canal roto, se reconecta y se
-    reintenta una sola vez. La operacion es idempotente porque el trabajador
-    ignora solicitudes con un solicitud_id ya registrado.
+    reintenta una sola vez. Es seguro porque los consumidores ignoran un
+    solicitud_id ya registrado.
     """
-    cuerpo = json.dumps(solicitud).encode()
-    propiedades = pika.BasicProperties(
-        content_type="application/json",
-        delivery_mode=2,
-        headers={"clave_interna": CLAVE_INTERNA},
-    )
     argumentos = {
-        "exchange": "",
-        "routing_key": COLA_NOMBRE,
-        "body": cuerpo,
-        "properties": propiedades,
+        "exchange": EXCHANGE_EVENTOS,
+        "routing_key": routing_key,
+        "body": json.dumps(evento).encode(),
+        "properties": pika.BasicProperties(
+            content_type="application/json",
+            delivery_mode=2,
+            headers={"clave_interna": CLAVE_INTERNA},
+        ),
         "mandatory": True,
     }
     try:
@@ -99,9 +93,9 @@ def _escuchar_invalidaciones(cache):
         try:
             conexion = pika.BlockingConnection(_parametros())
             canal = conexion.channel()
-            canal.exchange_declare(exchange=COLA_INVALIDACIONES, exchange_type="fanout", durable=True)
+            canal.exchange_declare(exchange=EXCHANGE_EVENTOS, exchange_type="topic", durable=True)
             cola = canal.queue_declare(queue="", exclusive=True, auto_delete=True).method.queue
-            canal.queue_bind(exchange=COLA_INVALIDACIONES, queue=cola)
+            canal.queue_bind(exchange=EXCHANGE_EVENTOS, queue=cola, routing_key="paquete.admitido")
 
             def invalidar(_canal, _metodo, _propiedades, cuerpo):
                 cinta_id = json.loads(cuerpo)["cinta_id"]
