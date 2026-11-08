@@ -1,0 +1,127 @@
+# Despliegue del sistema.
+#
+#   docker compose up -d --build
+#   docker compose up -d --scale ingreso=3 --scale admision=3
+
+name: tfu-ut3
+
+services:
+
+  rabbitmq:
+    image: rabbitmq:4.1-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-tfu}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-tfu}
+    volumes:
+      - datos_cola:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # Base de datos. Es el unico componente con estado.
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cinta
+      POSTGRES_USER: cinta
+      POSTGRES_PASSWORD: cinta
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - datos_cinta:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cinta"]
+      interval: 5s
+      retries: 10
+
+  # Administra el cupo de carga de la cinta. Sin estado, se puede replicar.
+  admision:
+    build: ./admision
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://cinta:cinta@db:5432/cinta
+    depends_on:
+      db:
+        condition: service_healthy
+    # Usa /health/live: si se cae la base, reiniciar admision no arregla nada.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  # Consume admisiones en segundo plano y confirma cada mensaje tras el commit.
+  procesador_cola:
+    build: ./admision
+    command: ["python", "-m", "app.cola_worker"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://cinta:cinta@db:5432/cinta
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # Valida el paquete antes de pedir cupo. Sin estado, se puede replicar.
+  ingreso:
+    build: ./ingreso
+    env_file: .env
+    environment:
+      ADMISION_URL: http://admision:8000
+    depends_on:
+      admision:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    # Limite de CPU por replica. Lo usa el script de escalabilidad.
+    deploy:
+      resources:
+        limits:
+          cpus: "${INGRESO_CPUS:-1.0}"
+
+  # Balanceador: reparte las solicitudes entre las replicas de ingreso.
+  # Tambien aplica el throttling (UT4).
+  balanceador:
+    image: nginx:1.27-alpine
+    volumes:
+      # Plantilla: nginx completa las variables de throttling al arrancar.
+      - ./nginx/nginx.conf:/etc/nginx/templates/nginx.conf.template:ro
+    environment:
+      NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
+      THROTTLE_TASA: ${THROTTLE_TASA:-20r/s}
+      THROTTLE_RAFAGA: ${THROTTLE_RAFAGA:-40}
+    ports:
+      - "8080:80"   # API publica, con throttling
+      - "8081:81"   # acceso a admision, para los scripts de demo
+      # El 82 (sin throttling) no se publica.
+    depends_on:
+      ingreso:
+        condition: service_healthy
+
+  # UT4 - Health Endpoint Monitoring. Ver con: docker compose logs -f monitor
+  monitor:
+    build: ./monitor
+    environment:
+      MONITOR_SERVICIOS: "ingreso:8000,admision:8000"
+      MONITOR_INTERVALO_S: ${MONITOR_INTERVALO_S:-2}
+      MONITOR_TIMEOUT_S: ${MONITOR_TIMEOUT_S:-4}
+    depends_on:
+      - balanceador
+
+  # Generador de carga de las demos. No se levanta junto con el resto.
+  generador:
+    build: ./carga
+    profiles: ["demos"]
+
+volumes:
+  datos_cinta:
+  datos_cola:
