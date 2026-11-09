@@ -8,10 +8,13 @@ capacidad de los servicios.
   rafaga       N solicitudes a la vez. Cuenta las respuestas por codigo HTTP.
   rendimiento  N solicitudes con concurrencia C. Mide solicitudes por segundo.
                Con --segundos S manda sin parar durante S segundos.
+  cola         N solicitudes encoladas; sigue cada una hasta su resultado final.
+  disponibilidad  tasa fija mientras se cae un componente (UT5).
 """
 
 import argparse
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -197,8 +200,140 @@ def cola(args):
     print(f"  tiempo desde inicio hasta vaciar la rafaga: {final - inicio:.2f} s")
 
 
+def disponibilidad(args):
+    """Envia a tasa fija mientras se cae un componente (UT5, atributo de calidad).
+
+    El script que llama programa la caida en tiempos absolutos: --empezar-en es
+    el instante 0 (epoch) y la caida va de --caida-desde a --caida-hasta
+    segundos. Cada solicitud se clasifica en antes, durante o despues segun
+    cuando salio. Con --estado-url ademas:
+      - una vez por segundo se consulta el estado de la ultima aceptada, para
+        ver si esa consulta sigue disponible durante la caida
+      - al terminar se sigue cada aceptada hasta que tenga resultado final
+    Sin --estado-url (ruta sincronica de la UT4) un 200 ya es el resultado final.
+    """
+    cuerpo = json.loads(args.cuerpo) if args.cuerpo else None
+    total = int(args.tasa * args.segundos)
+    inicio = args.empezar_en or time.time()
+    candado = threading.Lock()
+    aceptadas = []          # (t, solicitud_id)
+    consultas = []          # (t, codigo)
+    terminado = threading.Event()
+
+    def fase(t):
+        if t < args.caida_desde:
+            return "antes"
+        return "durante" if t < args.caida_hasta else "despues"
+
+    def enviar(i):
+        espera = inicio + i / args.tasa - time.time()
+        if espera > 0:
+            time.sleep(espera)
+        t = time.time() - inicio
+        codigo, ms, _, texto = solicitar(args.url, cuerpo, args.timeout)
+        if codigo == 202:
+            try:
+                with candado:
+                    aceptadas.append((t, json.loads(texto)["solicitud_id"]))
+            except (json.JSONDecodeError, KeyError):
+                pass
+        return t, codigo, ms
+
+    def sondear_estado():
+        while not terminado.wait(1.0):
+            with candado:
+                ultima = aceptadas[-1][1] if aceptadas else None
+            if ultima:
+                t = time.time() - inicio
+                codigo, _, _, _ = solicitar(f"{args.estado_url.rstrip('/')}/{ultima}", None, 5)
+                consultas.append((t, codigo))
+
+    espera_inicio = inicio - time.time()
+    if espera_inicio > 0:
+        time.sleep(espera_inicio)
+    sonda = None
+    if args.estado_url:
+        sonda = threading.Thread(target=sondear_estado, daemon=True)
+        sonda.start()
+    # Hilos de sobra: durante una caida la UT4 deja cada solicitud colgada
+    # varios segundos, y con pocos hilos el resto saldria tarde.
+    with ThreadPoolExecutor(max_workers=max(100, int(args.tasa * args.timeout) + 20)) as pool:
+        envios = list(pool.map(enviar, range(total)))
+    terminado.set()
+
+    print(f"  tasa {args.tasa:g}/s durante {args.segundos:g} s ({total} solicitudes), "
+          f"caida entre t={args.caida_desde:g} s y t={args.caida_hasta:g} s")
+    # La latencia importa tanto como el codigo: una solicitud que espera 8 s a
+    # que vuelva el componente termina en 200, pero el cliente estuvo bloqueado.
+    for nombre in ("antes", "durante", "despues"):
+        de_la_fase = [(c, ms) for t, c, ms in envios if fase(t) == nombre]
+        codigos = Counter(c for c, _ in de_la_fase)
+        enviadas = len(de_la_fase)
+        aceptadas_fase = codigos.get(200, 0) + codigos.get(202, 0)
+        porcentaje = 100 * aceptadas_fase / enviadas if enviadas else 0
+        latencias = sorted(ms for _, ms in de_la_fase) or [0]
+        p95 = latencias[min(len(latencias) - 1, (len(latencias) * 95 + 99) // 100 - 1)]
+        # Aceptada en menos de 1 s: lo que un cliente con un timeout razonable
+        # considera una respuesta exitosa.
+        rapidas = sum(1 for c, ms in de_la_fase if c in (200, 202) and ms < 1000)
+        porcentaje_rapidas = 100 * rapidas / enviadas if enviadas else 0
+        print(f"  {nombre:<8} enviadas {enviadas:>4}  aceptadas {aceptadas_fase:>4} "
+              f"({porcentaje:5.1f} %, en menos de 1 s {porcentaje_rapidas:5.1f} %)  "
+              f"latencia p95 {p95 / 1000:5.2f} s  max {latencias[-1] / 1000:5.2f} s"
+              f"  codigos {dict(sorted(codigos.items()))}")
+        print(f"RESULTADO|{nombre}|enviadas={enviadas}|aceptadas={aceptadas_fase}"
+              f"|porcentaje={porcentaje:.1f}|rapidas={porcentaje_rapidas:.1f}"
+              f"|p95_s={p95 / 1000:.2f}|max_s={latencias[-1] / 1000:.2f}")
+
+    durante = [c for t, c in consultas if fase(t) == "durante"]
+    if args.estado_url:
+        respondidas = sum(1 for c in durante if c in (200, 202))
+        porcentaje = 100 * respondidas / len(durante) if durante else 0
+        print(f"  consulta de estado durante la caida: {respondidas}/{len(durante)} respondidas "
+              f"({porcentaje:.1f} %)  codigos {dict(sorted(Counter(durante).items()))}")
+        print(f"RESULTADO|consulta|respondidas={respondidas}|total={len(durante)}|porcentaje={porcentaje:.1f}")
+
+    # Seguimiento de cada aceptada hasta su resultado final.
+    if not args.estado_url:
+        directas = sum(1 for _, c, _ in envios if c == 200)
+        print(f"  resueltas: {directas} de {directas} (la respuesta sincronica ya es el resultado)")
+        print(f"RESULTADO|resolucion|aceptadas={directas}|resueltas={directas}|admitidas={directas}"
+              f"|sin_resolver=0|segundos_tras_volver=0.0")
+        return
+
+    pendientes = dict((sid, t) for t, sid in aceptadas)
+    estados = Counter()
+    ultima_resolucion = None
+    tope = time.time() + args.drain_timeout
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        while pendientes and time.time() < tope:
+            lote = list(pendientes)
+            respuestas = pool.map(lambda sid: solicitar(
+                f"{args.estado_url.rstrip('/')}/{sid}", None, 5), lote)
+            for sid, (codigo, _, _, texto) in zip(lote, respuestas):
+                if codigo != 200:
+                    continue
+                pendientes.pop(sid)
+                ultima_resolucion = time.time() - inicio
+                try:
+                    estados[json.loads(texto).get("estado", "?")] += 1
+                except json.JSONDecodeError:
+                    estados["?"] += 1
+            if pendientes:
+                time.sleep(0.5)
+
+    resueltas = sum(estados.values())
+    tras_volver = max(0.0, (ultima_resolucion or 0) - args.caida_hasta)
+    print(f"  resueltas: {resueltas} de {len(aceptadas)}  {dict(sorted(estados.items()))}  "
+          f"sin resolver {len(pendientes)}")
+    print(f"  la ultima se resolvio {tras_volver:.1f} s despues de que volvio el componente")
+    print(f"RESULTADO|resolucion|aceptadas={len(aceptadas)}|resueltas={resueltas}"
+          f"|admitidas={estados.get('admitida', 0)}|sin_resolver={len(pendientes)}"
+          f"|segundos_tras_volver={tras_volver:.1f}")
+
+
 analizador = argparse.ArgumentParser(description="Generador de carga")
-analizador.add_argument("modo", choices=["rafaga", "rendimiento", "cola"])
+analizador.add_argument("modo", choices=["rafaga", "rendimiento", "cola", "disponibilidad"])
 analizador.add_argument("--url", required=True)
 analizador.add_argument("--cuerpo", help="cuerpo JSON de la solicitud")
 analizador.add_argument("--n", type=int, default=50, help="cantidad de solicitudes")
@@ -214,8 +349,13 @@ analizador.add_argument("--poll-workers", type=int, default=50,
                         help="hilos para el sondeo, acotados para no saturar al servidor")
 analizador.add_argument("--drain-timeout", type=float, default=120,
                         help="plazo total para vaciar la cola tras aceptar la rafaga")
+analizador.add_argument("--tasa", type=float, default=10, help="solicitudes por segundo (disponibilidad)")
+analizador.add_argument("--empezar-en", type=float, help="instante 0 en epoch (disponibilidad)")
+analizador.add_argument("--caida-desde", type=float, default=10, help="segundo en que empieza la caida")
+analizador.add_argument("--caida-hasta", type=float, default=20, help="segundo en que vuelve el componente")
 
 args = analizador.parse_args()
 if args.modo == "cola" and not args.estado_url:
     analizador.error("el modo cola requiere --estado-url")
-{"rafaga": rafaga, "rendimiento": rendimiento, "cola": cola}[args.modo](args)
+{"rafaga": rafaga, "rendimiento": rendimiento, "cola": cola,
+ "disponibilidad": disponibilidad}[args.modo](args)

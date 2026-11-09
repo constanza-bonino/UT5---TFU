@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError
 
 from app import consumidor, vista
 from app.config import MARGEN_VENCIDA_S
@@ -75,7 +76,11 @@ def consultar_solicitud(solicitud_id: uuid.UUID):
     de fallidos) no queda pendiente para siempre: pasado su plazo se informa
     como vencida, igual que la rechazaria admision.
     """
-    fila = vista.obtener(solicitud_id)
+    try:
+        fila = vista.obtener(solicitud_id)
+    except DBAPIError as error:
+        return JSONResponse(status_code=503, content={
+            "detail": f"base no disponible, reintente: {str(error).strip().splitlines()[0]}"})
     if fila is None or (fila.estado == "pendiente" and not _vencida(fila)):
         contenido = {"solicitud_id": str(solicitud_id), "estado": "pendiente"}
         if fila is not None and fila.vence_en is not None:
