@@ -1,26 +1,34 @@
 # Despliegue del sistema.
 #
 #   docker compose up -d --build
-#   docker compose up -d --scale ingreso=3 --scale admision=3
+#   docker compose up -d --scale ingreso=3 --scale validacion=2 --scale procesador_cola=2
+#
+# Las bases se crean solo con el volumen vacio. Para empezar de cero:
+#   docker compose down -v
 
-name: tfu-ut3
+name: tfu-ut5
 
 services:
 
+  # Broker de eventos. El exchange cinta.eventos, las colas y sus bindings se
+  # cargan de rabbitmq/definitions.json al arrancar (tambien el usuario tfu,
+  # porque con definiciones RabbitMQ no crea el usuario por defecto).
   rabbitmq:
-    image: rabbitmq:4.1-alpine
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-tfu}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-tfu}
+    image: rabbitmq:4.1-management-alpine
     volumes:
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./rabbitmq/definiciones.conf:/etc/rabbitmq/conf.d/20-definiciones.conf:ro
       - datos_cola:/var/lib/rabbitmq
+    ports:
+      - "15672:15672"   # consola de RabbitMQ (tfu/tfu), para ver las colas en las demos
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
       timeout: 5s
       retries: 12
 
-  # Base de datos. Es el unico componente con estado.
+  # Servidor de base de datos. Tiene dos bases, cada una con su dueno:
+  # cinta (admision) y seguimiento (seguimiento). Ningun servicio lee la otra.
   db:
     image: postgres:16-alpine
     environment:
@@ -28,7 +36,8 @@ services:
       POSTGRES_USER: cinta
       POSTGRES_PASSWORD: cinta
     volumes:
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./db/init.sql:/docker-entrypoint-initdb.d/10-cinta.sql:ro
+      - ./db/seguimiento.sql:/docker-entrypoint-initdb.d/20-seguimiento.sql:ro
       - datos_cinta:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cinta"]
@@ -73,12 +82,13 @@ services:
       rabbitmq:
         condition: service_healthy
 
-  # Escucha los resultados finales y expone el estado de cada solicitud.
+  # Escucha paquete.recibido y los resultados finales, y expone el estado de
+  # cada solicitud. Usa su propia base.
   seguimiento:
     build: ./seguimiento
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://cinta:cinta@db:5432/cinta
+      DATABASE_URL: postgresql+psycopg://seguimiento:seguimiento@db:5432/seguimiento
     depends_on:
       db:
         condition: service_healthy
@@ -133,10 +143,14 @@ services:
         condition: service_healthy
 
   # UT4 - Health Endpoint Monitoring. Ver con: docker compose logs -f monitor
+  # UT5: ademas vigila las colas, porque validacion y procesador_cola no tienen
+  # HTTP. Que una cola se quede sin consumidores es la senal de que se cayeron.
   monitor:
     build: ./monitor
     environment:
       MONITOR_SERVICIOS: "ingreso:8000,admision:8000,seguimiento:8000"
+      MONITOR_COLAS: "validacion.recibidos,admision.validados,seguimiento.resultados"
+      MONITOR_RABBITMQ_API: http://rabbitmq:15672
       MONITOR_INTERVALO_S: ${MONITOR_INTERVALO_S:-2}
       MONITOR_TIMEOUT_S: ${MONITOR_TIMEOUT_S:-4}
     depends_on:

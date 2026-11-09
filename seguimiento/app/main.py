@@ -1,10 +1,11 @@
 """
 Componente seguimiento.
 
-Arma una vista del estado de cada solicitud a partir de los eventos finales.
-Puede ir atrasada, pero nunca adelantada: solo dice "admitida" cuando llego
-paquete.admitido, que se publica despues del commit en admision. Solo ese estado
-autoriza la entrada del paquete.
+Arma una vista del estado de cada solicitud a partir de los eventos: la registra
+como pendiente con paquete.recibido y la cierra con paquete.admitido o
+paquete.rechazado. Puede ir atrasada, pero nunca adelantada: solo dice
+"admitida" cuando llego paquete.admitido, que se publica despues del commit en
+admision. Solo ese estado autoriza la entrada del paquete.
 """
 
 import asyncio
@@ -12,11 +13,13 @@ import logging
 import socket
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app import consumidor, vista
+from app.config import MARGEN_VENCIDA_S
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -59,13 +62,35 @@ def listo():
             "chequeos": {"base": {"ok": True}}}
 
 
+def _vencida(fila):
+    return (fila.estado == "pendiente" and fila.vence_en is not None
+            and datetime.now(timezone.utc) > fila.vence_en + timedelta(seconds=MARGEN_VENCIDA_S))
+
+
 @app.get("/solicitudes/{solicitud_id}")
 def consultar_solicitud(solicitud_id: uuid.UUID):
-    """Devuelve 202 mientras no llego un resultado final."""
+    """Devuelve 202 mientras esta pendiente, o el resultado final.
+
+    Si una solicitud se perdio en el camino (por ejemplo, termino en una cola
+    de fallidos) no queda pendiente para siempre: pasado su plazo se informa
+    como vencida, igual que la rechazaria admision.
+    """
     fila = vista.obtener(solicitud_id)
-    if fila is None:
-        return JSONResponse(status_code=202, content={
-            "solicitud_id": str(solicitud_id), "estado": "pendiente"})
+    if fila is None or (fila.estado == "pendiente" and not _vencida(fila)):
+        contenido = {"solicitud_id": str(solicitud_id), "estado": "pendiente"}
+        if fila is not None and fila.vence_en is not None:
+            contenido["vence_en"] = fila.vence_en.isoformat()
+        return JSONResponse(status_code=202, content=contenido)
+
+    if _vencida(fila):
+        return {
+            "solicitud_id": str(solicitud_id),
+            "estado": "vencida",
+            "codigo_resultado": 410,
+            "resultado": {"detail": "la solicitud no se resolvio dentro de su plazo"},
+            "vence_en": fila.vence_en.isoformat(),
+        }
+
     return {
         "solicitud_id": str(solicitud_id),
         "estado": fila.estado,

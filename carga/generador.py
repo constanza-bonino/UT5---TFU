@@ -20,7 +20,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 ETIQUETAS = {
     200: "admitido",
+    202: "recibido, pendiente de decision",
+    404: "cinta inexistente",
     409: "rechazado por falta de cupo",
+    410: "vencida antes de decidirse",
     422: "rechazado por la validacion del paquete",
     429: "rechazado por throttling",
     503: "servicio no disponible",

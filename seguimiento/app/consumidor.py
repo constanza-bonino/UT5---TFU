@@ -1,4 +1,4 @@
-"""Consume los resultados finales y actualiza la vista de estado."""
+"""Consume paquete.recibido y los resultados finales, y actualiza la vista."""
 
 import json
 import logging
@@ -6,6 +6,7 @@ import secrets
 import threading
 import time
 import uuid
+from datetime import datetime
 
 import pika
 
@@ -16,6 +17,7 @@ from app.config import (CLAVE_INTERNA, COLA_CONSUMIDORES, COLA_PREFETCH,
 LOG = logging.getLogger("seguimiento")
 
 ESTADOS = {"paquete.admitido": "admitida", "paquete.rechazado": "rechazada"}
+RECIBIDO = "paquete.recibido"
 
 
 def procesar(canal, metodo, propiedades, cuerpo):
@@ -28,8 +30,12 @@ def procesar(canal, metodo, propiedades, cuerpo):
             return
 
         evento = json.loads(cuerpo)
-        vista.guardar(uuid.UUID(evento["solicitud_id"]), ESTADOS[metodo.routing_key],
-                      int(evento["codigo_http"]), evento["resultado"])
+        solicitud_id = uuid.UUID(evento["solicitud_id"])
+        if metodo.routing_key == RECIBIDO:
+            vista.guardar_recibida(solicitud_id, datetime.fromisoformat(evento["vence_en"]))
+        else:
+            vista.guardar_resultado(solicitud_id, ESTADOS[metodo.routing_key],
+                                    int(evento["codigo_http"]), evento["resultado"])
         canal.basic_ack(delivery_tag=metodo.delivery_tag)
     except (KeyError, TypeError, ValueError):
         LOG.exception("Evento invalido enviado a la cola de fallidos")
@@ -55,7 +61,7 @@ def _consumir():
                 "x-dead-letter-exchange": "",
                 "x-dead-letter-routing-key": cola_fallidos,
             })
-            for routing_key in ESTADOS:
+            for routing_key in (RECIBIDO, *ESTADOS):
                 canal.queue_bind(exchange=EXCHANGE_EVENTOS, queue=COLA_RESULTADOS,
                                  routing_key=routing_key)
             canal.basic_qos(prefetch_count=COLA_PREFETCH)

@@ -1,0 +1,40 @@
+{
+  "users": [
+    {"name": "tfu", "password_hash": "R0f+u2nkNsSjhscWTuMiPkK77hwyjD/2Ibc5NyUy2pOk6Yq9",
+     "hashing_algorithm": "rabbit_password_hashing_sha256", "tags": ["administrator"]}
+  ],
+  "vhosts": [{"name": "/"}],
+  "permissions": [
+    {"user": "tfu", "vhost": "/", "configure": ".*", "write": ".*", "read": ".*"}
+  ],
+  "exchanges": [
+    {"name": "cinta.eventos", "vhost": "/", "type": "topic", "durable": true,
+     "auto_delete": false, "internal": false, "arguments": {}}
+  ],
+  "queues": [
+    {"name": "validacion.recibidos", "vhost": "/", "durable": true, "auto_delete": false,
+     "arguments": {"x-dead-letter-exchange": "", "x-dead-letter-routing-key": "validacion.recibidos.fallidos"}},
+    {"name": "validacion.recibidos.fallidos", "vhost": "/", "durable": true, "auto_delete": false,
+     "arguments": {}},
+    {"name": "admision.validados", "vhost": "/", "durable": true, "auto_delete": false,
+     "arguments": {"x-dead-letter-exchange": "", "x-dead-letter-routing-key": "admision.validados.fallidos"}},
+    {"name": "admision.validados.fallidos", "vhost": "/", "durable": true, "auto_delete": false,
+     "arguments": {}},
+    {"name": "seguimiento.resultados", "vhost": "/", "durable": true, "auto_delete": false,
+     "arguments": {"x-dead-letter-exchange": "", "x-dead-letter-routing-key": "seguimiento.resultados.fallidos"}},
+    {"name": "seguimiento.resultados.fallidos", "vhost": "/", "durable": true, "auto_delete": false,
+     "arguments": {}}
+  ],
+  "bindings": [
+    {"source": "cinta.eventos", "vhost": "/", "destination": "validacion.recibidos",
+     "destination_type": "queue", "routing_key": "paquete.recibido", "arguments": {}},
+    {"source": "cinta.eventos", "vhost": "/", "destination": "admision.validados",
+     "destination_type": "queue", "routing_key": "paquete.validado", "arguments": {}},
+    {"source": "cinta.eventos", "vhost": "/", "destination": "seguimiento.resultados",
+     "destination_type": "queue", "routing_key": "paquete.recibido", "arguments": {}},
+    {"source": "cinta.eventos", "vhost": "/", "destination": "seguimiento.resultados",
+     "destination_type": "queue", "routing_key": "paquete.admitido", "arguments": {}},
+    {"source": "cinta.eventos", "vhost": "/", "destination": "seguimiento.resultados",
+     "destination_type": "queue", "routing_key": "paquete.rechazado", "arguments": {}}
+  ]
+}

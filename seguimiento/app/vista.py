@@ -21,20 +21,43 @@ def crear_tabla():
             CREATE TABLE IF NOT EXISTS seguimiento_solicitud (
                 id            UUID        PRIMARY KEY,
                 estado        TEXT        NOT NULL,
-                codigo_http   INTEGER     NOT NULL,
-                resultado     JSONB       NOT NULL,
-                procesada_en  TIMESTAMPTZ NOT NULL DEFAULT now()
+                codigo_http   INTEGER,
+                resultado     JSONB,
+                vence_en      TIMESTAMPTZ,
+                recibida_en   TIMESTAMPTZ,
+                procesada_en  TIMESTAMPTZ
             )
         """))
 
 
-def guardar(solicitud_id, estado, codigo_http, resultado):
-    """El ON CONFLICT hace que un evento duplicado no cambie nada."""
+def guardar_recibida(solicitud_id, vence_en):
+    """Registra la solicitud como pendiente.
+
+    Los eventos de una misma solicitud pueden procesarse en cualquier orden
+    (hay varios consumidores), asi que si el resultado llego antes no se toca.
+    """
     with motor.begin() as conexion:
         conexion.execute(text("""
-            INSERT INTO seguimiento_solicitud (id, estado, codigo_http, resultado)
-            VALUES (:id, :estado, :codigo_http, CAST(:resultado AS JSONB))
-            ON CONFLICT (id) DO NOTHING
+            INSERT INTO seguimiento_solicitud (id, estado, vence_en, recibida_en)
+            VALUES (:id, 'pendiente', :vence_en, now())
+            ON CONFLICT (id) DO UPDATE
+               SET vence_en = EXCLUDED.vence_en,
+                   recibida_en = EXCLUDED.recibida_en
+        """), {"id": solicitud_id, "vence_en": vence_en})
+
+
+def guardar_resultado(solicitud_id, estado, codigo_http, resultado):
+    """Guarda el resultado final. Un evento duplicado no cambia nada."""
+    with motor.begin() as conexion:
+        conexion.execute(text("""
+            INSERT INTO seguimiento_solicitud (id, estado, codigo_http, resultado, procesada_en)
+            VALUES (:id, :estado, :codigo_http, CAST(:resultado AS JSONB), now())
+            ON CONFLICT (id) DO UPDATE
+               SET estado = EXCLUDED.estado,
+                   codigo_http = EXCLUDED.codigo_http,
+                   resultado = EXCLUDED.resultado,
+                   procesada_en = EXCLUDED.procesada_en
+             WHERE seguimiento_solicitud.estado = 'pendiente'
         """), {"id": solicitud_id, "estado": estado, "codigo_http": codigo_http,
                "resultado": json.dumps(resultado)})
 
@@ -42,7 +65,7 @@ def guardar(solicitud_id, estado, codigo_http, resultado):
 def obtener(solicitud_id):
     with motor.connect() as conexion:
         return conexion.execute(text("""
-            SELECT estado, codigo_http, resultado, procesada_en
+            SELECT estado, codigo_http, resultado, vence_en, recibida_en, procesada_en
             FROM seguimiento_solicitud WHERE id = :id
         """), {"id": solicitud_id}).first()
 
