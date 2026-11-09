@@ -15,6 +15,13 @@ load_dotenv()
 ADMISION_URL = os.getenv("ADMISION_URL", "http://admision:8000")
 # UT5: contrato SOAP de IAdmisionCinta (ConsultarCinta).
 ADMISION_WSDL = os.getenv("ADMISION_WSDL", f"{ADMISION_URL}/soap?wsdl")
+# Una consulta de estado es una lectura simple: si tarda mas que esto, admision
+# esta en problemas y no vale la pena seguir esperando.
+TIMEOUT_SOAP_S = float(os.getenv("TIMEOUT_SOAP_S", 2))
+
+# UT5 - Circuit Breaker sobre la llamada SOAP.
+CIRCUITO_UMBRAL_FALLOS = int(float(os.getenv("CIRCUITO_UMBRAL_FALLOS", 3)))
+CIRCUITO_APERTURA_S = float(os.getenv("CIRCUITO_APERTURA_S", 10))
 SEGUIMIENTO_URL = os.getenv("SEGUIMIENTO_URL", "http://seguimiento:8000")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://tfu:tfu@rabbitmq:5672/%2F")
 EXCHANGE_EVENTOS = os.getenv("EXCHANGE_EVENTOS", "cinta.eventos")

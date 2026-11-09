@@ -68,6 +68,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://cinta:cinta@db:5432/cinta
+      # Pausa por evento. Solo la usa la demo de entrega garantizada, para que
+      # la rafaga dure lo suficiente como para tirar el procesador a la mitad.
+      COLA_PAUSA_PROCESAMIENTO_S: ${COLA_PAUSA_PROCESAMIENTO_S:-0}
     depends_on:
       admision:
         condition: service_healthy

@@ -8,7 +8,9 @@ RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 INGRESO="${INGRESO:-http://localhost:8080}"
 ADMISION="${ADMISION:-http://localhost:8081}"
+RABBIT="${RABBIT:-http://localhost:15672}"
 CINTA="${CINTA_ID:-C1}"
+CLAVE_INTERNA="$(sed -n 's/^CLAVE_INTERNA=//p' "$RAIZ/.env" | tr -d '\r')"
 
 
 PAQUETE_10KG='{"tipo_paquete":"normal","peso_kg":10,"alto_cm":50,"ancho_cm":50,"largo_cm":70}'
@@ -75,7 +77,12 @@ campo() {
     printf '%s' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\).*/\1/p" | head -1
 }
 
-estado_cinta()    { curl -s "$ADMISION/cintas/$CINTA"; }
+# UT5: la consulta de admision es SOAP; se pide a ingreso (que la consume)
+# despues de invalidar su cache, para leer siempre el valor actual.
+estado_cinta() {
+    curl -s -X POST "$INGRESO/cintas/$CINTA/cache/invalidar" > /dev/null
+    curl -s "$INGRESO/cintas/$CINTA"
+}
 estado_eventual() { curl -s "$ADMISION/demo/cintas/$CINTA/eventual"; }
 reiniciar_cinta() { curl -s -X POST "$ADMISION/demo/cintas/$CINTA/reiniciar" > /dev/null; }
 
@@ -102,4 +109,25 @@ esperar() {
         sleep 1
     done
     return 1
+}
+
+# --- eventos (UT5) -----------------------------------------------------------
+
+uuid_nuevo() {
+    od -An -N16 -tx1 /dev/urandom | tr -d ' \n' \
+        | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/'
+}
+
+# cola_info <cola> -> JSON con mensajes y consumidores (API de RabbitMQ)
+cola_info() {
+    curl -s -u tfu:tfu "$RABBIT/api/queues/%2F/$1?columns=messages,messages_ready,messages_unacknowledged,consumers"
+}
+
+# publicar_evento <routing_key> <json>: publica en cinta.eventos como lo haria
+# un componente interno, con la credencial interna.
+publicar_evento() {
+    local cuerpo; cuerpo="$(printf '%s' "$2" | sed 's/"/\\"/g')"
+    curl -s -u tfu:tfu -H 'Content-Type: application/json' \
+        -X POST "$RABBIT/api/exchanges/%2F/cinta.eventos/publish" \
+        -d "{\"properties\":{\"delivery_mode\":2,\"headers\":{\"clave_interna\":\"$CLAVE_INTERNA\"}},\"routing_key\":\"$1\",\"payload\":\"$cuerpo\",\"payload_encoding\":\"string\"}"
 }

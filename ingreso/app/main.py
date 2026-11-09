@@ -86,6 +86,12 @@ def metricas_cache():
     return cache_cintas.metricas()
 
 
+@app.get("/circuito/admision")
+def estado_circuito():
+    """Estado del Circuit Breaker de la llamada SOAP a admision."""
+    return cliente_soap.circuito.resumen()
+
+
 @app.post("/cintas/{cinta_id}/cache/invalidar")
 def invalidar_cache_cinta(cinta_id: str):
     """Invalida explicitamente la cache de una cinta (Cache-Aside)."""

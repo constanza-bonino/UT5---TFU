@@ -63,6 +63,10 @@ def _decidir(solicitud_id: uuid.UUID, evento: dict, peso: Decimal):
             _bloquear_solicitud(sesion, solicitud_id)
             previo = sesion.get(ResultadoSolicitudCola, solicitud_id)
             if previo is not None:
+                # Consumidor idempotente: la decision ya esta tomada, no se vuelve a
+                # reservar cupo. Solo se reenvia el resultado por si no habia salido.
+                LOG.info("Solicitud %s ya decidida (entrega duplicada); se reenvia el resultado",
+                         solicitud_id)
                 return previo.codigo_http, previo.respuesta
 
             if datetime.fromisoformat(evento["vence_en"]) <= datetime.now(timezone.utc):

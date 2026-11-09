@@ -8,6 +8,10 @@ respuesta contra el esquema del WSDL: si admision devolviera algo que no
 cumple el contrato, la llamada falla aca y no llega al cliente.
 
 Devuelve (codigo, cuerpo) igual que el cliente REST al que reemplaza.
+
+La llamada pasa por un Circuit Breaker (circuito.py): si admision deja de
+responder, despues de unos fallos ingreso corta en el acto en vez de esperar
+el timeout en cada consulta.
 """
 
 import asyncio
@@ -20,7 +24,9 @@ from zeep.exceptions import Fault
 from zeep.helpers import serialize_object
 from zeep.transports import AsyncTransport
 
-from app.config import ADMISION_WSDL, TIMEOUT_ADMISION_S
+from app.circuito import CircuitBreaker
+from app.config import (ADMISION_WSDL, CIRCUITO_APERTURA_S,
+                        CIRCUITO_UMBRAL_FALLOS, TIMEOUT_SOAP_S)
 
 LOG = logging.getLogger("cliente_soap")
 
@@ -29,12 +35,14 @@ NS_ADM = "http://tfu.ucu.edu.uy/cinta/admision"
 _cliente = None
 _candado = asyncio.Lock()
 
+circuito = CircuitBreaker("admision-soap", CIRCUITO_UMBRAL_FALLOS, CIRCUITO_APERTURA_S)
+
 
 def _crear_cliente():
     # Bloqueante: descarga y procesa el WSDL. Se corre fuera del bucle de eventos.
     transporte = AsyncTransport(
-        client=httpx.AsyncClient(timeout=TIMEOUT_ADMISION_S),
-        wsdl_client=httpx.Client(timeout=TIMEOUT_ADMISION_S),
+        client=httpx.AsyncClient(timeout=TIMEOUT_SOAP_S),
+        wsdl_client=httpx.Client(timeout=TIMEOUT_SOAP_S),
     )
     return AsyncClient(ADMISION_WSDL, transport=transporte)
 
@@ -60,6 +68,24 @@ async def cerrar():
 
 async def estado_cinta(cinta_id):
     """Invoca ConsultarCinta. Un Fault CintaInexistente se traduce a 404."""
+    if not circuito.permitir():
+        return 503, (f"admision no responde: circuito abierto, se reintenta en "
+                     f"{circuito.segundos_para_reintentar()} s")
+
+    resultado = None
+    try:
+        resultado = await _consultar(cinta_id)
+        return resultado
+    finally:
+        # Si la llamada se cancela a mitad de camino (resultado None) tambien
+        # cuenta como fallo, para no dejar la prueba del semiabierto colgada.
+        if resultado is not None and resultado[0] in (200, 404):
+            circuito.exito()
+        else:
+            circuito.fallo()
+
+
+async def _consultar(cinta_id):
     try:
         cliente = await _obtener_cliente()
     except Exception as error:
@@ -72,6 +98,6 @@ async def estado_cinta(cinta_id):
             return 404, fault.message
         return 503, f"admision respondio un SOAP Fault: {fault.message}"
     except (httpx.HTTPError, ErrorZeep) as error:
-        return 503, f"no se pudo consultar a admision por SOAP: {error}"
+        return 503, f"no se pudo consultar a admision por SOAP: {error or type(error).__name__}"
 
     return 200, dict(serialize_object(estado))
