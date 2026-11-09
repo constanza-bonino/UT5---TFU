@@ -34,7 +34,7 @@ nota "nada). El monitor usa ready."
 paso "admision"
 nota "live  -> $(curl -s "$ADMISION/health/live")"
 nota "ready -> $(curl -s "$ADMISION/health/ready")"
-paso "ingreso (su dependencia es admision)"
+paso "ingreso (UT5: su unica dependencia es el broker, ya no admision)"
 nota "live  -> $(curl -s "$INGRESO/health/live")"
 nota "ready -> $(curl -s "$INGRESO/health/ready")"
 
@@ -67,7 +67,12 @@ nota "ingreso  ready -> $(curl -s "$INGRESO/health/ready")"
 
 verificar "admision live sigue viva" "$(codigo "$ADMISION/health/live")" "200"
 verificar "admision ready informa la falla" "$(codigo "$ADMISION/health/ready")" "503"
-verificar "ingreso ready informa la falla" "$(codigo "$INGRESO/health/ready")" "503"
+verificar "ingreso sigue listo: no depende de la base" "$(codigo "$INGRESO/health/ready")" "200"
+CODIGO_ENVIO="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$INGRESO/paquetes" \
+    -H 'Content-Type: application/json' -d "$PAQUETE_10KG")"
+verificar "y sigue recibiendo paquetes" "$CODIGO_ENVIO" "202"
+nota "En la UT4 ingreso dependia de admision y ready daba 503. Ahora el paquete"
+nota "queda como evento y se decide cuando vuelva la base."
 
 paso "Docker no los marca enfermos: el proceso esta bien, le falta la base"
 dc ps --format '{{.Name}}\t{{.Status}}' | grep -E 'ingreso|admision' | sed 's/^/   /'
@@ -123,11 +128,39 @@ else
     else
         fallo "el monitor no registro la salida de $VICTIMA"
     fi
-    if dc logs --no-log-prefix --since "$DESDE" monitor 2>/dev/null | grep -q "$VICTIMA.*FUERA -> OK"; then
+    # Puede volver directo (FUERA -> OK) o pasar por SIN RESPUESTA si la
+    # replica ya esta en el DNS pero todavia no termino de arrancar.
+    if dc logs --no-log-prefix --since "$DESDE" monitor 2>/dev/null | grep -qE "$VICTIMA.*(FUERA|SIN RESPUESTA) -> OK"; then
         ok "y la vio volver"
     else
         fallo "el monitor no registro la vuelta de $VICTIMA"
     fi
+fi
+
+# --- 6 ------------------------------------------------------------------------
+seccion "H.6  Se cae un procesador de eventos"
+nota "validacion no tiene HTTP: no hay /health/ready que consultar. El monitor"
+nota "la vigila por su cola: si validacion.recibidos se queda sin consumidores,"
+nota "el procesador esta caido. Los eventos no se pierden, se acumulan."
+DESDE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+paso "docker compose stop validacion"
+dc stop validacion > /dev/null 2>&1
+for _ in 1 2 3; do enviar_paquete "$PAQUETE_10KG" > /dev/null; done
+sleep 8   # la API de RabbitMQ actualiza sus contadores cada 5 s
+paso "docker compose start validacion"
+dc start validacion > /dev/null 2>&1
+sleep 8
+paso "Lo que registro el monitor"
+monitor_desde "$DESDE" | grep 'validacion.recibidos'
+if dc logs --no-log-prefix --since "$DESDE" monitor 2>/dev/null | grep -q 'validacion.recibidos.*-> SIN CONSUMIDORES'; then
+    ok "el monitor detecto la caida de validacion por su cola"
+else
+    fallo "el monitor no registro la caida de validacion"
+fi
+if dc logs --no-log-prefix --since "$DESDE" monitor 2>/dev/null | grep -q 'validacion.recibidos.*SIN CONSUMIDORES -> OK'; then
+    ok "y la vio volver"
+else
+    fallo "el monitor no registro la vuelta de validacion"
 fi
 
 nota ""

@@ -12,6 +12,9 @@ motor = create_engine(
     pool_size=DB_POOL_SIZE,
     max_overflow=0,
     pool_timeout=DB_POOL_TIMEOUT_S,
+    # Sin esto, con la base caida /health/ready se queda colgado y el monitor
+    # lo ve SIN RESPUESTA en vez de DEGRADADO.
+    connect_args={"connect_timeout": 2},
 )
 
 

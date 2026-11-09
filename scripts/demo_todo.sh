@@ -4,6 +4,7 @@
 #
 #   bash scripts/demo_todo.sh            para entre una y otra, esperando Enter
 #   PAUSA=0 bash scripts/demo_todo.sh    las corre todas seguidas, sin parar
+#   TODAS=1 bash scripts/demo_todo.sh    suma las de la UT3 y la UT4
 #
 # La pausa sirve para la defensa: se corre una demo, se explica lo que salió en
 # pantalla, y recién ahí se pasa a la siguiente.
@@ -20,14 +21,28 @@ if [ "$PAUSA" = "auto" ]; then
 fi
 
 DEMOS=(
-    "demo_health.sh|Health Endpoint Monitoring (disponibilidad)"
-    "demo_throttling.sh|Throttling (disponibilidad)"
-    "demo_cache_aside.sh|Cache-Aside (rendimiento)"
-    "demo_queue_load_leveling.sh|Queue Based Load Leveling (rendimiento)"
-    "demo_seguridad.sh|Gatekeeper y Gateway Offloading (seguridad)"
+    "demo_flujo_eventos.sh|Flujo de eventos (estilo arquitectonico)"
+    "demo_soap.sh|Migracion de REST a SOAP"
+    "demo_circuit_breaker.sh|Circuit Breaker (falacias)"
+    "demo_entrega_garantizada.sh|Entrega garantizada e idempotencia (falacias)"
 )
 
-titulo "TFU UT4: DEMOSTRACION COMPLETA"
+# Las de unidades anteriores, adaptadas al flujo por eventos.
+if [ "${TODAS:-0}" = "1" ]; then
+    DEMOS+=(
+        "demo_2_stateless.sh|Servicios sin estado (UT3)"
+        "demo_3_acid.sh|ACID (UT3)"
+        "demo_4_base.sh|Contrafactico BASE (UT3)"
+        "demo_5_escalabilidad.sh|Escalabilidad horizontal (UT3)"
+        "demo_health.sh|Health Endpoint Monitoring (UT4)"
+        "demo_throttling.sh|Throttling (UT4)"
+        "demo_cache_aside.sh|Cache-Aside (UT4)"
+        "demo_queue_load_leveling.sh|Queue-Based Load Leveling (UT4)"
+        "demo_seguridad.sh|Gatekeeper y Gateway Offloading (UT4)"
+    )
+fi
+
+titulo "TFU UT5: DEMOSTRACION COMPLETA"
 requiere_sistema
 
 nota "Se van a correr estas demostraciones:"

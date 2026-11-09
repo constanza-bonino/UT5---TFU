@@ -25,15 +25,16 @@ nota "terminal."
 # --- 1 ------------------------------------------------------------------------
 seccion "T.1  Un cliente que se pasa del limite"
 nota "80 solicitudes simultaneas de un mismo cliente. Uso un paquete invalido"
-nota "para no tocar la cinta: las que pasan el limite dan 422 (las rechaza la"
-nota "validacion de ingreso), las que no, 429 (las rechaza nginx)."
+nota "para no tocar la cinta: las que pasan el limite dan 202 (ingreso publica"
+nota "el evento y despues validacion lo rechaza), las que no, 429 (las rechaza"
+nota "nginx y nunca llegan a generar un evento)."
 printf '\n'
 
 SALIDA="$(generador rafaga --n 80 --url http://balanceador/paquetes \
           --cuerpo "$PAQUETE_INVALIDO" --ejemplos)"
 printf '%s\n' "$SALIDA"
 
-PASARON="$(printf '%s' "$SALIDA" | sed -n 's/.*HTTP 422 *x\([0-9]*\).*/\1/p')"
+PASARON="$(printf '%s' "$SALIDA" | sed -n 's/.*HTTP 202 *x\([0-9]*\).*/\1/p')"
 FRENADAS="$(printf '%s' "$SALIDA" | sed -n 's/.*HTTP 429 *x\([0-9]*\).*/\1/p')"
 printf '\n'
 nota "Pasaron ${PASARON:-0}: la rafaga de $RAFAGA mas lo que el limite repuso mientras llegaban."

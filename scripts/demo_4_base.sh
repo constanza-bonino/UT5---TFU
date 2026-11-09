@@ -15,9 +15,10 @@ nota "comportaria un almacen eventualmente consistente."
 seccion "4.1  Con transaccion"
 reiniciar_cinta
 mostrar_cinta
-paso "50 solicitudes simultaneas de 10 kg"
+paso "50 solicitudes simultaneas de 10 kg, por el flujo de eventos"
 # Puerto 82: entrada interna sin throttling (UT4).
-generador rafaga --n 50 --url http://balanceador:82/paquetes --cuerpo "$PAQUETE_10KG"
+generador cola --n 50 --c 50 --url http://balanceador:82/paquetes \
+    --estado-url http://balanceador:82/solicitudes --cuerpo "$PAQUETE_10KG"
 
 ACID="$(estado_cinta)"
 ACID_PAQ="$(campo "$ACID" paquetes_en_transito)"

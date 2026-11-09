@@ -35,22 +35,29 @@ printf '\n'
 printf '  tiempo   ocupacion de la cinta            carga en kg    paquetes   salen          llega\n'
 printf '  ------   ------------------------------   ------------   --------   ------------   -----------\n'
 
+# La vuelta usa solo funciones de bash (EPOCHREALTIME, aritmetica, mapfile) y
+# no date, awk o wc: en Windows cada proceso cuesta ~100 ms y la vuelta tiene
+# que entrar en un segundo.
+
+# microsegundos desde 1970
+ahora_us() { local t="${EPOCHREALTIME/[.,]/}"; printf '%s' "$t"; }
+
 # barra <carga> <capacidad>
 barra() {
-    local llenos
-    llenos=$(awk -v c="$1" -v m="$2" 'BEGIN { printf "%d", (c/m)*28 }')
+    local carga="${1%.*}" capacidad="${2%.*}" llenos i
+    llenos=$(( ${carga:-0} * 28 / ${capacidad:-1} ))
     printf '['
-    for i in $(seq 1 28); do
+    for (( i = 1; i <= 28; i++ )); do
         if [ "$i" -le "$llenos" ]; then printf '#'; else printf '.'; fi
     done
     printf ']'
 }
 
-INICIO="$(date +%s)"
+INICIO="$EPOCHSECONDS"
 
 while true; do
-    TIC_INICIO="$(date +%s%N)"
-    AHORA="$(date +%s)"
+    TIC_INICIO="$(ahora_us)"
+    AHORA="$EPOCHSECONDS"
     T=$(( AHORA - INICIO ))
     [ "$T" -ge "$DURACION" ] && break
 
@@ -73,14 +80,12 @@ while true; do
     fi
 
     # --- 2. Llega un paquete nuevo ------------------------------------------
+    # UT5: se envia la solicitud (202) y se espera la decision de admision.
     PESO=$(( (RANDOM % 5 + 1) * 5 ))
-    RESPUESTA="$(curl -s -w '\n%{http_code}' -X POST "$INGRESO/paquetes" \
-        -H 'Content-Type: application/json' \
-        -d "{\"tipo_paquete\":\"normal\",\"peso_kg\":$PESO,\"alto_cm\":50,\"ancho_cm\":50,\"largo_cm\":70}")"
-    CODIGO="$(printf '%s' "$RESPUESTA" | tail -1)"
-    CUERPO="$(printf '%s' "$RESPUESTA" | head -1)"
+    CUERPO="$(procesar_paquete \
+        "{\"tipo_paquete\":\"normal\",\"peso_kg\":$PESO,\"alto_cm\":50,\"ancho_cm\":50,\"largo_cm\":70}")"
 
-    if [ "$CODIGO" = "200" ]; then
+    if [ "$(campo "$CUERPO" estado)" = "admitida" ]; then
         ID="$(campo "$CUERPO" paquete_id)"
         echo "$(( AHORA + TRANSITO )) $ID $PESO" >> "$EN_CINTA"
         ADMITIDOS=$(( ADMITIDOS + 1 ))
@@ -94,7 +99,8 @@ while true; do
     # La carga sale de la respuesta anterior, tanto si el paquete entro como si
     # lo rechazaron. Asi se evita una llamada HTTP extra por vuelta.
     CARGA="$(campo "$CUERPO" carga_kg)"
-    PAQ="$(wc -l < "$EN_CINTA" | tr -d ' ')"
+    mapfile -t LINEAS < "$EN_CINTA"
+    PAQ="${#LINEAS[@]}"
 
     # Las salidas van primero porque ocurren primero: un paquete libera su lugar
     # antes de que se intente admitir al siguiente.
@@ -103,10 +109,11 @@ while true; do
 
     # Dormir solo lo que falte para completar el intervalo, descontando lo que
     # tardaron las llamadas HTTP. Si no, cada vuelta se va corriendo.
-    DEMORA_MS=$(( ( $(date +%s%N) - TIC_INICIO ) / 1000000 ))
+    DEMORA_MS=$(( ( $(ahora_us) - TIC_INICIO ) / 1000 ))
     RESTA_MS=$(( INTERVALO * 1000 - DEMORA_MS ))
     if [ "$RESTA_MS" -gt 0 ]; then
-        sleep "$(awk -v ms="$RESTA_MS" 'BEGIN { printf "%.2f", ms/1000 }')"
+        printf -v ESPERA '%d.%03d' $(( RESTA_MS / 1000 )) $(( RESTA_MS % 1000 ))
+        sleep "$ESPERA"
     fi
 done
 

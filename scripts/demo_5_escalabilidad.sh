@@ -14,6 +14,10 @@
 # La carga son solicitudes que la validacion rechaza: no llegan a la base, asi
 # que se mide el componente que se escala y no el que se comparte.
 #
+# UT5: ingreso ya no valida. Lo que se mide es cuantas solicitudes por segundo
+# puede recibir y publicar como paquete.recibido (todas responden 202); el
+# rechazo lo hace despues validacion, fuera del tiempo de respuesta.
+#
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/comun.sh"
 

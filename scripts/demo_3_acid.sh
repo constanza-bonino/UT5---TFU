@@ -8,7 +8,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/comun.sh"
 titulo "DEMOSTRACION 3 — ACID"
 requiere_sistema
 
-nota "La transaccion de POST /cintas/{id}/admisiones:"
+nota "La transaccion que ejecuta admision al recibir paquete.validado:"
 nota ""
 nota "    BEGIN"
 nota "      SELECT ... FOR UPDATE"
@@ -16,12 +16,14 @@ nota "      verificar cupo"
 nota "      INSERT paquete_en_transito"
 nota "      UPDATE cinta.carga_kg"
 nota "    COMMIT"
+nota ""
+nota "UT5: el resto del sistema es eventualmente consistente (el cliente se entera"
+nota "despues), pero la decision sobre el cupo sigue siendo esta unica transaccion."
 
 seccion "3.1  ATOMICIDAD"
 reiniciar_cinta
 paso "Admito 30 kg por el camino normal"
-curl -s -o /dev/null -X POST "$INGRESO/paquetes" -H 'Content-Type: application/json' \
-    -d '{"tipo_paquete":"normal","peso_kg":30,"alto_cm":50,"ancho_cm":50,"largo_cm":70}'
+procesar_paquete '{"tipo_paquete":"normal","peso_kg":30,"alto_cm":50,"ancho_cm":50,"largo_cm":70}' > /dev/null
 mostrar_cinta
 
 paso "La misma transaccion, fallando entre las escrituras y el COMMIT"
@@ -59,9 +61,13 @@ nota "Cinta de 100 kg vacia, 50 solicitudes simultaneas de 10 kg. Caben 10."
 printf '\n'
 mostrar_cinta
 
-paso "Lanzando las 50"
+paso "Lanzando las 50 y esperando que se decidan todas"
 # Puerto 82: entrada interna sin throttling (UT4).
-generador rafaga --n 50 --url http://balanceador:82/paquetes --cuerpo "$PAQUETE_10KG"
+generador cola --n 50 --c 50 --url http://balanceador:82/paquetes \
+    --estado-url http://balanceador:82/solicitudes --cuerpo "$PAQUETE_10KG"
+nota ""
+nota "Con 8 consumidores por replica de procesador_cola, varias transacciones"
+nota "compiten por la misma fila: SELECT ... FOR UPDATE las pone en fila."
 
 ESTADO="$(estado_cinta)"
 printf '\n'
@@ -78,6 +84,10 @@ PAQ_ANTES="$(campo "$(estado_cinta)" paquetes_en_transito)"
 paso "docker compose restart db"
 dc restart db > /dev/null 2>&1
 esperar || fallo "la base no volvio a tiempo"
+for _ in $(seq 1 30); do
+    [ -n "$(campo "$(estado_cinta)" carga_kg)" ] && break
+    sleep 1
+done
 mostrar_cinta
 
 verificar "la carga sobrevivio" "$(campo "$(estado_cinta)" carga_kg)" "$CARGA_ANTES"

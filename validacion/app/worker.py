@@ -63,6 +63,10 @@ def procesar(canal, metodo, propiedades, cuerpo):
                 "resultado": {"detail": motivo},
             })
         canal.basic_ack(delivery_tag=metodo.delivery_tag)
+        # El solicitud_id viaja en todos los eventos: permite seguir un paquete
+        # por los logs de cada componente.
+        LOG.info("Solicitud %s: paquete.recibido -> %s", paquete["solicitud_id"],
+                 "paquete.validado" if motivo is None else "paquete.rechazado (422)")
     except (KeyError, TypeError, ValueError):
         LOG.exception("Evento invalido enviado a la cola de fallidos")
         canal.basic_nack(delivery_tag=metodo.delivery_tag, requeue=False)

@@ -72,9 +72,14 @@ dc() { ( cd "$RAIZ" && docker compose "$@" ); }
 # cambie la cantidad de replicas de los otros servicios.
 generador() { dc run --rm --no-deps generador "$@" 2>&1 | grep -vE '^ Container|^\[\+\]|^ Network'; }
 
-# campo <json> <clave> -> valor sin comillas
+# campo <json> <clave> -> valor sin comillas (la primera aparicion de la clave)
+#
+# En bash puro, sin sed ni head: en Windows cada proceso cuesta ~100 ms y el
+# simulador llama a esta funcion varias veces por segundo.
 campo() {
-    printf '%s' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\).*/\1/p" | head -1
+    local patron="\"$2\"[[:space:]]*:[[:space:]]*\"?([^\",}]*)"
+    [[ $1 =~ $patron ]] && printf '%s' "${BASH_REMATCH[1]}"
+    return 0
 }
 
 # UT5: la consulta de admision es SOAP; se pide a ingreso (que la consume)
@@ -84,7 +89,28 @@ estado_cinta() {
     curl -s "$INGRESO/cintas/$CINTA"
 }
 estado_eventual() { curl -s "$ADMISION/demo/cintas/$CINTA/eventual"; }
-reiniciar_cinta() { curl -s -X POST "$ADMISION/demo/cintas/$CINTA/reiniciar" > /dev/null; }
+# UT5: antes de reiniciar se espera a que no queden eventos en vuelo. Si una
+# demo anterior dejo una rafaga encolada, esos paquetes se seguirian admitiendo
+# despues del reinicio y llenarian la cinta.
+reiniciar_cinta() {
+    esperar_colas_vacias
+    curl -s -X POST "$ADMISION/demo/cintas/$CINTA/reiniciar" > /dev/null
+}
+
+esperar_colas_vacias() {
+    local total m
+    for _ in $(seq 1 180); do
+        total=0
+        for cola in validacion.recibidos admision.validados seguimiento.resultados; do
+            m="$(campo "$(cola_info "$cola")" messages)"
+            total=$(( total + ${m:-0} ))
+        done
+        [ "$total" -eq 0 ] && return 0
+        [ "${_aviso_colas:-0}" -eq 0 ] && { nota "(esperando que se procesen $total eventos pendientes)"; _aviso_colas=1; }
+        sleep 1
+    done
+    return 1
+}
 
 mostrar_cinta() {
     local json; json="$(estado_cinta)"
@@ -123,11 +149,50 @@ cola_info() {
     curl -s -u tfu:tfu "$RABBIT/api/queues/%2F/$1?columns=messages,messages_ready,messages_unacknowledged,consumers"
 }
 
-# publicar_evento <routing_key> <json>: publica en cinta.eventos como lo haria
-# un componente interno, con la credencial interna.
+# publicar_evento <routing_key> <json> [clave]: publica en cinta.eventos como
+# lo haria un componente interno. Sin tercer argumento usa la credencial interna.
 publicar_evento() {
     local cuerpo; cuerpo="$(printf '%s' "$2" | sed 's/"/\\"/g')"
+    local clave="${3-$CLAVE_INTERNA}"
     curl -s -u tfu:tfu -H 'Content-Type: application/json' \
         -X POST "$RABBIT/api/exchanges/%2F/cinta.eventos/publish" \
-        -d "{\"properties\":{\"delivery_mode\":2,\"headers\":{\"clave_interna\":\"$CLAVE_INTERNA\"}},\"routing_key\":\"$1\",\"payload\":\"$cuerpo\",\"payload_encoding\":\"string\"}"
+        -d "{\"properties\":{\"delivery_mode\":2,\"headers\":{\"clave_interna\":\"$clave\"}},\"routing_key\":\"$1\",\"payload\":\"$cuerpo\",\"payload_encoding\":\"string\"}"
+}
+
+# enviar_paquete <json> [api_key] -> solicitud_id (vacio si no se acepto)
+enviar_paquete() {
+    local extra=()
+    [ -n "${2:-}" ] && extra=(-H "X-API-Key: $2")
+    campo "$(curl -s -X POST "$INGRESO/paquetes" -H 'Content-Type: application/json' \
+        "${extra[@]}" -d "$1")" solicitud_id
+}
+
+# esperar_resultado <solicitud_id> -> JSON con el estado final. Mientras la
+# solicitud esta pendiente, seguimiento responde 202; se consulta hasta 20 s.
+esperar_resultado() {
+    local r=""
+    for _ in $(seq 1 80); do
+        r="$(curl -s -w '\n%{http_code}' "$INGRESO/solicitudes/$1")"
+        if [ "${r##*$'\n'}" != "202" ]; then
+            printf '%s' "${r%$'\n'*}"; return 0
+        fi
+        sleep 0.1
+    done
+    printf '%s' "${r%$'\n'*}"; return 1
+}
+
+# procesar_paquete <json> [api_key] -> JSON final: envia y espera la decision.
+procesar_paquete() {
+    local id; id="$(enviar_paquete "$@")"
+    [ -n "$id" ] && esperar_resultado "$id"
+}
+
+# esperar_cinta <paquetes>: espera a que la cinta tenga esa cantidad de paquetes
+# (los eventos se procesan despues de que el cliente recibe el 202).
+esperar_cinta() {
+    for _ in $(seq 1 60); do
+        [ "$(campo "$(estado_cinta)" paquetes_en_transito)" = "$1" ] && return 0
+        sleep 0.5
+    done
+    return 1
 }

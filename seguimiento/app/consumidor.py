@@ -33,9 +33,12 @@ def procesar(canal, metodo, propiedades, cuerpo):
         solicitud_id = uuid.UUID(evento["solicitud_id"])
         if metodo.routing_key == RECIBIDO:
             vista.guardar_recibida(solicitud_id, datetime.fromisoformat(evento["vence_en"]))
+            LOG.info("Solicitud %s: paquete.recibido -> pendiente", solicitud_id)
         else:
-            vista.guardar_resultado(solicitud_id, ESTADOS[metodo.routing_key],
+            estado = ESTADOS[metodo.routing_key]
+            vista.guardar_resultado(solicitud_id, estado,
                                     int(evento["codigo_http"]), evento["resultado"])
+            LOG.info("Solicitud %s: %s -> %s", solicitud_id, metodo.routing_key, estado)
         canal.basic_ack(delivery_tag=metodo.delivery_tag)
     except (KeyError, TypeError, ValueError):
         LOG.exception("Evento invalido enviado a la cola de fallidos")

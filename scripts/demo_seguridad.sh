@@ -1,92 +1,95 @@
 #!/usr/bin/env bash
 #
-# UT4 - Patrones de Seguridad: Gatekeeper y Gateway Offloading.
-#   1. Gatekeeper:
-#      - Intento de admision directa a admision sin credencial interna (403)
-#      - Admision pasando por ingreso (Gatekeeper valida y adjunta credencial interna) (200)
-#      - Filtrado de paquetes anomalos en el Gatekeeper antes de llegar al backend (422)
-#   2. Gateway Offloading:
-#      - Autenticacion de clientes externos descargada en la frontera (ingreso)
-#      - Rechazo de clave de cliente externa invalida con 401
-#      - Aceptacion de clave valida con 200
+# Patrones de seguridad: Gatekeeper y Gateway Offloading.
+#
+#   1. Gatekeeper
+#      - un evento falsificado (sin la credencial interna) no admite nada:
+#        admision lo descarta y termina en la cola de fallidos
+#      - el mismo evento con la credencial si se procesa
+#      - un paquete no conforme lo frena validacion antes de llegar a admision
+#   2. Gateway Offloading
+#      - ingreso autentica a los clientes externos (API Key) en la frontera
+#      - clave invalida: 401 en el acto, no se publica ningun evento
+#      - clave valida: 202 y la solicitud queda a nombre del cliente
+#
+# UT5: en la UT4 el Gatekeeper era una cabecera HTTP que admision exigia en
+# POST /cintas/{id}/admisiones. Ese endpoint ya no existe: admision solo
+# reacciona a eventos, asi que la credencial interna viaja en cada evento y
+# cada procesador la verifica antes de actuar.
 #
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/comun.sh"
 
-titulo "UT4: GATEKEEPER Y GATEWAY OFFLOADING (SEGURIDAD)"
+titulo "GATEKEEPER Y GATEWAY OFFLOADING (SEGURIDAD)"
 requiere_sistema
 reiniciar_cinta
 
-# ==============================================================================
-seccion "S.1  Gatekeeper (Proteccion del perimetro y sanitizacion de entrada)"
-# ==============================================================================
+# evento_validado <solicitud_id>: un paquete.validado de 10 kg
+evento_validado() {
+    printf '{"solicitud_id":"%s","vence_en":"%s","cinta_id":"%s","tipo_paquete":"normal","peso_kg":10,"alto_cm":50,"ancho_cm":50,"largo_cm":70}' \
+        "$1" "$(date -u -d '+5 minutes' '+%Y-%m-%dT%H:%M:%S+00:00')" "$CINTA"
+}
 
-nota "El backend (admision) es un recurso protegido que solo confia en el"
-nota "Gatekeeper (ingreso). Clientes externos no deben poder saltarse las"
-nota "validaciones de negocio comunicandose directamente con admision."
+# ==============================================================================
+seccion "S.1  Gatekeeper"
+# ==============================================================================
+nota "Admision no tiene una API para admitir: actua al recibir paquete.validado."
+nota "Quien logre publicar en el broker podria intentar saltarse la validacion"
+nota "publicando ese evento directamente. Cada evento lleva la credencial interna"
+nota "en sus cabeceras y admision descarta los que no la traen."
 printf '\n'
 
-paso "1. Intento de admision directa a admision SIN credencial interna"
-CODIGO_DIRECTO="$(curl -s -o /tmp/gate_resp.json -w '%{http_code}' \
-    -X POST "$ADMISION/cintas/$CINTA/admisiones" \
-    -H 'Content-Type: application/json' \
-    -d '{"tipo_paquete":"normal","peso_kg":10}')"
-nota "HTTP $CODIGO_DIRECTO -> $(cat /tmp/gate_resp.json 2>/dev/null)"
-verificar "admision rechaza solicitud directa sin credencial" "$CODIGO_DIRECTO" "403"
+FALLIDOS_ANTES="$(campo "$(cola_info admision.validados.fallidos)" messages)"
+DESDE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-paso "2. Admision a traves del Gatekeeper (ingreso)"
-CODIGO_GATE="$(curl -s -o /tmp/gate_resp2.json -w '%{http_code}' \
-    -X POST "$INGRESO/paquetes" \
-    -H 'Content-Type: application/json' \
-    -d "$PAQUETE_10KG")"
-nota "HTTP $CODIGO_GATE -> $(cat /tmp/gate_resp2.json 2>/dev/null)"
-verificar "a traves de ingreso la solicitud es admitida" "$CODIGO_GATE" "200"
+paso "1. paquete.validado publicado SIN la credencial interna"
+ID="$(uuid_nuevo)"
+nota "publicacion: $(publicar_evento paquete.validado "$(evento_validado "$ID")" "clave-falsa")"
+sleep 2
+dc logs procesador_cola --since "$DESDE" 2>/dev/null | grep -i 'credencial' | tail -1 | sed 's/^/   /'
+verificar "la carga no cambio" "$(campo "$(estado_cinta)" carga_kg)" "0.0"
+sleep 5   # la API de RabbitMQ actualiza sus contadores cada 5 s
+FALLIDOS_DESPUES="$(campo "$(cola_info admision.validados.fallidos)" messages)"
+verificar "el evento termino en admision.validados.fallidos" \
+    "$(( ${FALLIDOS_DESPUES:-0} - ${FALLIDOS_ANTES:-0} ))" "1"
 
-paso "3. Sanitizacion en el Gatekeeper: paquete no conforme (fragil de 9 kg, maximo 8 kg)"
-CODIGO_INVALIDO="$(curl -s -o /tmp/gate_resp3.json -w '%{http_code}' \
-    -X POST "$INGRESO/paquetes" \
-    -H 'Content-Type: application/json' \
-    -d "$PAQUETE_INVALIDO")"
-nota "HTTP $CODIGO_INVALIDO -> $(cat /tmp/gate_resp3.json 2>/dev/null)"
-verificar "Gatekeeper bloquea paquete invalido en el perimetro" "$CODIGO_INVALIDO" "422"
+paso "2. El mismo evento CON la credencial interna"
+ID="$(uuid_nuevo)"
+nota "publicacion: $(publicar_evento paquete.validado "$(evento_validado "$ID")")"
+FINAL="$(esperar_resultado "$ID")"
+verificar "admision lo proceso" "$(campo "$FINAL" estado)" "admitida"
+verificar "carga" "$(campo "$(estado_cinta)" carga_kg)" "10.0"
 
-CARGA_ACTUAL="$(campo "$(estado_cinta)" carga_kg)"
-verificar "la carga en admision no vario por el paquete invalido" "$CARGA_ACTUAL" "10.0"
+paso "3. Paquete no conforme por la entrada publica (fragil de 9 kg, maximo 8)"
+FINAL="$(procesar_paquete "$PAQUETE_INVALIDO")"
+nota "$FINAL"
+verificar "validacion lo rechaza" "$(campo "$FINAL" codigo_resultado)" "422"
+verificar "la carga no vario" "$(campo "$(estado_cinta)" carga_kg)" "10.0"
 
 # ==============================================================================
-seccion "S.2  Gateway Offloading (Descarga de autenticacion de clientes)"
+seccion "S.2  Gateway Offloading (autenticacion en la frontera)"
 # ==============================================================================
-
-nota "La autenticacion de los clientes externos se resuelve en la frontera"
-nota "(ingreso / API Gateway), liberando al servicio interno (admision) de"
-nota "gestionar identidades, tokens o API keys de clientes externos."
+nota "La autenticacion de los clientes externos se resuelve en ingreso. Ningun"
+nota "procesador de eventos conoce ni valida API Keys de clientes."
 printf '\n'
 
-paso "1. Solicitud con API Key invalida hacia el Gateway"
-CODIGO_AUTH_FAIL="$(curl -s -o /tmp/gw_auth_fail.json -w '%{http_code}' \
-    -X POST "$INGRESO/paquetes" \
-    -H 'Content-Type: application/json' \
-    -H 'X-API-Key: clave-cliente-inexistente' \
+paso "1. API Key invalida"
+CODIGO="$(curl -s -o /tmp/gw.json -w '%{http_code}' -X POST "$INGRESO/paquetes" \
+    -H 'Content-Type: application/json' -H 'X-API-Key: clave-cliente-inexistente' \
     -d "$PAQUETE_10KG")"
-nota "HTTP $CODIGO_AUTH_FAIL -> $(cat /tmp/gw_auth_fail.json 2>/dev/null)"
-verificar "Gateway rechaza credencial de cliente invalida" "$CODIGO_AUTH_FAIL" "401"
+nota "HTTP $CODIGO -> $(cat /tmp/gw.json)"
+verificar "ingreso rechaza la credencial" "$CODIGO" "401"
 
-paso "2. Solicitud con API Key valida hacia el Gateway (cliente-alpha)"
-CODIGO_AUTH_OK="$(curl -s -o /tmp/gw_auth_ok.json -w '%{http_code}' \
-    -X POST "$INGRESO/paquetes" \
-    -H 'Content-Type: application/json' \
-    -H 'X-API-Key: cliente-alpha' \
+paso "2. API Key valida (cliente-alpha)"
+CODIGO="$(curl -s -o /tmp/gw.json -w '%{http_code}' -X POST "$INGRESO/paquetes" \
+    -H 'Content-Type: application/json' -H 'X-API-Key: cliente-alpha' \
     -d "$PAQUETE_10KG")"
-nota "HTTP $CODIGO_AUTH_OK -> $(cat /tmp/gw_auth_ok.json 2>/dev/null)"
-verificar "Gateway autentica y procesa la solicitud con exito" "$CODIGO_AUTH_OK" "200"
+nota "HTTP $CODIGO -> $(cat /tmp/gw.json)"
+verificar "ingreso acepta la solicitud" "$CODIGO" "202"
+verificar "cliente identificado en la frontera" "$(campo "$(cat /tmp/gw.json)" cliente)" "cliente-alpha"
+FINAL="$(esperar_resultado "$(campo "$(cat /tmp/gw.json)" solicitud_id)")"
+verificar "y despues se admite" "$(campo "$FINAL" estado)" "admitida"
 
-CLIENTE_RESP="$(campo "$(cat /tmp/gw_auth_ok.json 2>/dev/null)" cliente)"
-verificar "cliente identificado por Gateway" "$CLIENTE_RESP" "cliente-alpha"
-
-nota ""
-nota "Admision jamas vio ni proceso la API Key del cliente externo:"
-nota "la responsabilidad de autenticacion quedo totalmente descargada en el Gateway."
-
-rm -f /tmp/gate_resp.json /tmp/gate_resp2.json /tmp/gate_resp3.json /tmp/gw_auth_fail.json /tmp/gw_auth_ok.json
+rm -f /tmp/gw.json
 reiniciar_cinta
 cierre
