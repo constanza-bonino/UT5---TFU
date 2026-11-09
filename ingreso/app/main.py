@@ -25,7 +25,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app import cliente_admision
+from app import cliente_seguimiento, cliente_soap
 from app.cache import cache_cintas
 from app.cola import iniciar_listener_cache, publicar
 from app.config import (CACHE_HABILITADA, CACHE_TTL_S, CINTA_POR_DEFECTO,
@@ -44,7 +44,8 @@ async def ciclo_de_vida(_):
         max_workers=HILOS_MAX, thread_name_prefix="ingreso-bloqueante"))
     iniciar_listener_cache(cache_cintas)
     yield
-    await cliente_admision.cerrar()
+    await cliente_seguimiento.cerrar()
+    await cliente_soap.cerrar()
 
 
 app = FastAPI(
@@ -100,6 +101,9 @@ async def consultar_cinta(cinta_id: str):
     Aplica el patron Cache-Aside (rendimiento):
     - Si el dato esta en cache (HIT), se devuelve sin consultar a admision.
     - Si no esta o expiro (MISS), se consulta a admision y se guarda en cache.
+
+    UT5: en un MISS, admision se consulta por SOAP (ConsultarCinta). El cliente
+    externo sigue viendo la misma API REST de siempre.
     """
     clave = f"cinta:{cinta_id}"
     if CACHE_HABILITADA:
@@ -110,7 +114,7 @@ async def consultar_cinta(cinta_id: str):
                 headers={"X-Cache": "HIT"},
             )
 
-    codigo, cuerpo = await cliente_admision.estado_cinta(cinta_id)
+    codigo, cuerpo = await cliente_soap.estado_cinta(cinta_id)
     if codigo != 200:
         raise HTTPException(codigo, cuerpo)
 
@@ -119,7 +123,7 @@ async def consultar_cinta(cinta_id: str):
 
     return JSONResponse(
         content={"cinta": cuerpo, "instancia": {"ingreso": INSTANCIA, "cache": "miss"}},
-        headers={"X-Cache": "MISS"},
+        headers={"X-Cache": "MISS", "X-Origen": "admision-soap"},
     )
 
 
@@ -160,7 +164,7 @@ async def consultar_solicitud(
     _: str = Depends(autenticar_cliente),
 ):
     """Devuelve 202 mientras esta pendiente, o el resultado final."""
-    codigo, cuerpo = await cliente_admision.estado_solicitud(solicitud_id)
+    codigo, cuerpo = await cliente_seguimiento.estado_solicitud(solicitud_id)
     if codigo == 503:
         raise HTTPException(codigo, cuerpo)
     return JSONResponse(status_code=codigo, content=cuerpo)

@@ -1,6 +1,5 @@
 """
-Cliente HTTP de los componentes internos que ingreso consulta: admision
-(estado de la cinta) y seguimiento (estado de una solicitud).
+Cliente HTTP de seguimiento, para consultar el estado de una solicitud.
 
 Devuelve siempre (codigo, cuerpo) para que main.py decida que responder.
 
@@ -14,8 +13,7 @@ import threading
 
 import httpx
 
-from app.config import (ADMISION_URL, CLAVE_INTERNA, SEGUIMIENTO_URL,
-                        TIMEOUT_ADMISION_S)
+from app.config import CLAVE_INTERNA, SEGUIMIENTO_URL, TIMEOUT_ADMISION_S
 
 _cliente = None
 _candado = threading.Lock()
@@ -59,11 +57,6 @@ async def _pedir(url):
     if r.status_code != 200:
         cuerpo = cuerpo.get("detail", cuerpo) if isinstance(cuerpo, dict) else cuerpo
     return r.status_code, cuerpo
-
-
-async def estado_cinta(cinta_id):
-    """Consulta el estado de una cinta."""
-    return await _pedir(f"{ADMISION_URL}/cintas/{cinta_id}")
 
 
 async def estado_solicitud(solicitud_id):

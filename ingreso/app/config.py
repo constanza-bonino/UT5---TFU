@@ -13,6 +13,8 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 ADMISION_URL = os.getenv("ADMISION_URL", "http://admision:8000")
+# UT5: contrato SOAP de IAdmisionCinta (ConsultarCinta).
+ADMISION_WSDL = os.getenv("ADMISION_WSDL", f"{ADMISION_URL}/soap?wsdl")
 SEGUIMIENTO_URL = os.getenv("SEGUIMIENTO_URL", "http://seguimiento:8000")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://tfu:tfu@rabbitmq:5672/%2F")
 EXCHANGE_EVENTOS = os.getenv("EXCHANGE_EVENTOS", "cinta.eventos")

@@ -3,7 +3,8 @@ Componente admision. Administra el cupo de carga de la cinta, que es el recurso
 compartido y finito del sistema.
 
 La admision de paquetes ya no es un endpoint: la hace cola_worker.py al recibir
-paquete.validado. Esta API solo consulta la cinta y registra egresos.
+paquete.validado. Esta API expone la consulta de la cinta por SOAP (soap.py) y
+registra egresos por REST.
 
 El servicio en si no guarda nada en memoria: todo el estado esta en PostgreSQL.
 Por eso tambien se puede replicar, ya que dos replicas que compiten por la misma
@@ -22,15 +23,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 
 from app.config import HILOS_DB
 from app.db import INSTANCIA, Sesion, repo, sembrar_cinta, vista_cinta
 from app.demo import router as router_demo
-from app.modelos import PaqueteEnTransito
 from app.salud import router as router_salud
 from app.salud import vivo
+from app.soap import router as router_soap
 
 
 @asynccontextmanager
@@ -78,31 +78,8 @@ def raiz():
     return health()
 
 
-def _consultar_en_hilo(cinta_id: str):
-    with Sesion() as sesion:
-        cinta = repo.obtener(sesion, cinta_id)
-        if cinta is None:
-            raise HTTPException(404, f"cinta {cinta_id} no existe")
-
-        cantidad = sesion.scalar(
-            select(func.count()).select_from(PaqueteEnTransito)
-            .where(PaqueteEnTransito.cinta_id == cinta_id))
-        vista = vista_cinta(cinta)
-
-    vista["paquetes_en_transito"] = int(cantidad or 0)
-    vista["instancia"] = INSTANCIA
-    return vista
-
-
-@app.get("/cintas/{cinta_id}")
-async def consultar(cinta_id: str):
-    """Estado actual de la cinta. Lectura sin bloqueo."""
-    try:
-        return await asyncio.to_thread(_consultar_en_hilo, cinta_id)
-    except HTTPException:
-        raise
-    except DBAPIError as error:
-        raise HTTPException(503, f"base no disponible, reintente: {error}")
+# UT5 - La consulta de la cinta se migro de REST (GET /cintas/{id}) a SOAP.
+app.include_router(router_soap)
 
 
 def _egresar_en_hilo(cinta_id: str, paquete_id: uuid.UUID):

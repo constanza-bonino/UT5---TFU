@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Contrato SOAP 1.1 de IAdmisionCinta (document/literal).
+
+  ConsultarCinta es la operacion que en la UT3 y la UT4 se exponia como
+  GET /cintas/{cinta_id} con JSON. Devuelve los mismos datos.
+
+  {{UBICACION}} se reemplaza al servir el WSDL con la URL del servicio.
+-->
+<wsdl:definitions
+    name="AdmisionCinta"
+    targetNamespace="http://tfu.ucu.edu.uy/cinta/admision"
+    xmlns:tns="http://tfu.ucu.edu.uy/cinta/admision"
+    xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+    xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+
+  <wsdl:types>
+    <xsd:schema targetNamespace="http://tfu.ucu.edu.uy/cinta/admision"
+                elementFormDefault="qualified">
+
+      <xsd:complexType name="EstadoCinta">
+        <xsd:sequence>
+          <xsd:element name="id" type="xsd:string"/>
+          <xsd:element name="capacidad_kg" type="xsd:double"/>
+          <xsd:element name="carga_kg" type="xsd:double"/>
+          <xsd:element name="disponible_kg" type="xsd:double"/>
+          <xsd:element name="paquetes_en_transito" type="xsd:int"/>
+          <xsd:element name="instancia" type="xsd:string"/>
+        </xsd:sequence>
+      </xsd:complexType>
+
+      <xsd:element name="ConsultarCinta">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="cinta_id" type="xsd:string"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:element name="ConsultarCintaResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="estado" type="tns:EstadoCinta"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:element name="CintaInexistente">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="cinta_id" type="xsd:string"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+    </xsd:schema>
+  </wsdl:types>
+
+  <wsdl:message name="ConsultarCintaRequest">
+    <wsdl:part name="parameters" element="tns:ConsultarCinta"/>
+  </wsdl:message>
+  <wsdl:message name="ConsultarCintaResponse">
+    <wsdl:part name="parameters" element="tns:ConsultarCintaResponse"/>
+  </wsdl:message>
+  <wsdl:message name="CintaInexistenteFault">
+    <wsdl:part name="detalle" element="tns:CintaInexistente"/>
+  </wsdl:message>
+
+  <wsdl:portType name="IAdmisionCinta">
+    <wsdl:operation name="ConsultarCinta">
+      <wsdl:input message="tns:ConsultarCintaRequest"/>
+      <wsdl:output message="tns:ConsultarCintaResponse"/>
+      <wsdl:fault name="CintaInexistente" message="tns:CintaInexistenteFault"/>
+    </wsdl:operation>
+  </wsdl:portType>
+
+  <wsdl:binding name="AdmisionCintaSoap" type="tns:IAdmisionCinta">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsdl:operation name="ConsultarCinta">
+      <soap:operation soapAction="http://tfu.ucu.edu.uy/cinta/admision/ConsultarCinta"/>
+      <wsdl:input><soap:body use="literal"/></wsdl:input>
+      <wsdl:output><soap:body use="literal"/></wsdl:output>
+      <wsdl:fault name="CintaInexistente"><soap:fault name="CintaInexistente" use="literal"/></wsdl:fault>
+    </wsdl:operation>
+  </wsdl:binding>
+
+  <wsdl:service name="AdmisionCintaService">
+    <wsdl:port name="AdmisionCintaPort" binding="tns:AdmisionCintaSoap">
+      <soap:address location="{{UBICACION}}"/>
+    </wsdl:port>
+  </wsdl:service>
+
+</wsdl:definitions>

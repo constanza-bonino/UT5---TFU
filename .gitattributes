@@ -1,1 +1,3 @@
 scripts/*.sh text eol=lf
+# Se montan tal cual en los contenedores: con CRLF RabbitMQ no lee su configuracion.
+rabbitmq/* text eol=lf
