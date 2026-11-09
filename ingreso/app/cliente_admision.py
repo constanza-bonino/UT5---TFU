@@ -1,7 +1,7 @@
 """
-Cliente de la interfaz IAdmisionCinta.
+Cliente HTTP de los componentes internos que ingreso consulta: admision
+(estado de la cinta) y seguimiento (estado de una solicitud).
 
-Es el unico punto donde el componente ingreso consume el componente admision.
 Devuelve siempre (codigo, cuerpo) para que main.py decida que responder.
 
 Usa un unico httpx.AsyncClient con conexiones persistentes (keep-alive). La
@@ -14,7 +14,8 @@ import threading
 
 import httpx
 
-from app.config import ADMISION_URL, CLAVE_INTERNA, TIMEOUT_ADMISION_S
+from app.config import (ADMISION_URL, CLAVE_INTERNA, SEGUIMIENTO_URL,
+                        TIMEOUT_ADMISION_S)
 
 _cliente = None
 _candado = threading.Lock()
@@ -43,15 +44,12 @@ async def cerrar():
         await cliente.aclose()
 
 
-async def _pedir(metodo, ruta, json=None):
+async def _pedir(url):
     cabeceras = {"X-Clave-Interna": CLAVE_INTERNA}
     try:
-        r = await _cliente_async().request(
-            metodo, ADMISION_URL + ruta, json=json, headers=cabeceras)
+        r = await _cliente_async().get(url, headers=cabeceras)
     except httpx.HTTPError as error:
-        # Si no se puede confirmar el cupo, no se admite: ante la duda la cinta
-        # no avanza.
-        return 503, f"no se pudo contactar al componente de admision: {error}"
+        return 503, f"no se pudo contactar al componente interno: {error}"
 
     try:
         cuerpo = r.json()
@@ -63,17 +61,11 @@ async def _pedir(metodo, ruta, json=None):
     return r.status_code, cuerpo
 
 
-async def admitir(cinta_id, tipo_paquete, peso_kg):
-    """Pide cupo para un paquete."""
-    return await _pedir("POST", f"/cintas/{cinta_id}/admisiones",
-                        {"tipo_paquete": tipo_paquete, "peso_kg": peso_kg})
-
-
 async def estado_cinta(cinta_id):
     """Consulta el estado de una cinta."""
-    return await _pedir("GET", f"/cintas/{cinta_id}")
+    return await _pedir(f"{ADMISION_URL}/cintas/{cinta_id}")
 
 
 async def estado_solicitud(solicitud_id):
-    """Consulta si una solicitud encolada sigue pendiente o ya termino."""
-    return await _pedir("GET", f"/solicitudes/{solicitud_id}")
+    """Consulta si una solicitud sigue pendiente o ya termino."""
+    return await _pedir(f"{SEGUIMIENTO_URL}/solicitudes/{solicitud_id}")

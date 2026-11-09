@@ -52,10 +52,30 @@ services:
       retries: 3
       start_period: 15s
 
-  # Consume admisiones en segundo plano y confirma cada mensaje tras el commit.
+  # Escucha paquete.validado, decide el cupo y publica el resultado.
   procesador_cola:
     build: ./admision
     command: ["python", "-m", "app.cola_worker"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://cinta:cinta@db:5432/cinta
+    depends_on:
+      admision:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # Escucha paquete.recibido y aplica las reglas. Sin estado, se puede replicar.
+  validacion:
+    build: ./validacion
+    env_file: .env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # Escucha los resultados finales y expone el estado de cada solicitud.
+  seguimiento:
+    build: ./seguimiento
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://cinta:cinta@db:5432/cinta
@@ -64,16 +84,21 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
 
-  # Valida el paquete antes de pedir cupo. Sin estado, se puede replicar.
+  # Frontera del sistema: publica paquete.recibido. Sin estado, se puede replicar.
   ingreso:
     build: ./ingreso
     env_file: .env
     environment:
       ADMISION_URL: http://admision:8000
+      SEGUIMIENTO_URL: http://seguimiento:8000
     depends_on:
-      admision:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
     healthcheck:
@@ -111,7 +136,7 @@ services:
   monitor:
     build: ./monitor
     environment:
-      MONITOR_SERVICIOS: "ingreso:8000,admision:8000"
+      MONITOR_SERVICIOS: "ingreso:8000,admision:8000,seguimiento:8000"
       MONITOR_INTERVALO_S: ${MONITOR_INTERVALO_S:-2}
       MONITOR_TIMEOUT_S: ${MONITOR_TIMEOUT_S:-4}
     depends_on:
